@@ -183,7 +183,11 @@ public:
 		import_temp_manager.import_to_temp(path, metadata, move,
 				[this] (const std::string &dir) {
 			if (!dir.empty()) {
-				storage_manager.import_from_temp(dir);
+				storage_manager.import_from_temp(dir, [this]
+						(const std::string &id) {
+					if (id != "")
+						analyze(id);
+				});
 			}
 		});
 	}

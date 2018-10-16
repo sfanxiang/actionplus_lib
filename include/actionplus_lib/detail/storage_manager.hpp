@@ -150,9 +150,10 @@ public:
 	}
 
 	// Import a new video from a temporary directory
-	inline void import_from_temp(const std::string &dir)
+	inline void import_from_temp(const std::string &dir,
+		std::function<void(const std::string &id)> internal_callback)
 	{
-		write_worker.add([this, dir] {
+		write_worker.add([this, dir, internal_callback] {
 			std::string uuid{boost::uuids::to_string(uuid_gen())};
 			std::uint64_t timestamp_count = std::chrono::duration_cast<
 				std::chrono::milliseconds>(
@@ -163,6 +164,8 @@ public:
 
 			std::string id = timestamp.str() + "_" + uuid;
 			boost::filesystem::rename(dir, storage_dir + "/" + id);
+
+			internal_callback(id);
 		});
 	}
 
