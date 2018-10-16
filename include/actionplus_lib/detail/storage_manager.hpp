@@ -117,7 +117,7 @@ public:
 				}
 			} catch (...) {}
 
-			callback(storage_dir + "/" + id + "/video");
+			callback("");
 		});
 	}
 
