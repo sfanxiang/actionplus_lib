@@ -11,7 +11,6 @@
 #include "analyze_helper.hpp"
 #include "worker.hpp"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -22,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -59,77 +59,20 @@ public:
 
 				analyze_record.id = id;
 				analyze_record.length = length;
-				analyze_record.pos = humans->size() - 1;
-
-				for (auto wait = wait_records.begin();
-						wait != wait_records.end(); ) {
-					if (wait->id == id && wait->pos <= analyze_record.pos) {
-						bool success = true;
-
-						try {
-							auto humans_copy = std::shared_ptr<std::list<std::unique_ptr<
-								libaction::Human>>>(new std::list<std::unique_ptr<
-									libaction::Human>>());
-							for (auto &human: *humans) {
-								std::unique_ptr<libaction::Human> copy;
-								if (human) {
-									copy.reset(new libaction::Human(*human));
-								}
-								humans_copy->push_back(std::move(copy));
-							}
-
-							auto callback = wait->callback;
-
-							analyze_helper.add_read_task([callback, length, humans_copy] {
-								auto humans_unique = std::unique_ptr<std::list<std::unique_ptr<
-									libaction::Human>>>(
-										new std::list<std::unique_ptr<libaction::Human>>(
-											std::move(*humans_copy)));
-
-								callback(true, length, std::move(humans_unique));
-							});
-						} catch (...) {
-							success = false;
-						}
-
-						if (success)
-							wait = wait_records.erase(wait);
-						else
-							++wait;
-					} else {
-						++wait;
-					}
-				}
+				analyze_record.humans = std::move(humans);
 
 				lk.unlock();
 
 				write_update_callback();
 			},
-			[this, id] {
+			[this] {
 				std::lock_guard<std::mutex> lk(record_mtx);
-
 				analyze_record = AnalyzeRecord();
-
-				for (auto wait = wait_records.begin();
-						wait != wait_records.end(); ) {
-					if (wait->id == id) {
-						try {
-							auto callback = wait->callback;
-							analyze_helper.add_read_task([callback] {
-								callback(false, 0, nullptr);
-							});
-						} catch (...) {}
-
-						wait = wait_records.erase(wait);
-					} else {
-						++wait;
-					}
-				}
 			}
 		);
 	}
 
-	// Get the metadata of the currently running analysis (or empty)
+	// Get the metadata of the currently running analysis
 	inline void current_analysis_meta(
 		std::function<void(
 			const std::string &id, std::size_t length, std::size_t pos)>
@@ -140,7 +83,9 @@ public:
 
 			auto id = analyze_record.id;
 			auto length = analyze_record.length;
-			auto pos = analyze_record.pos;
+			auto pos = 0;
+			if (analyze_record.humans && analyze_record.humans->size() > 0)
+				pos = analyze_record.humans->size() - 1;
 
 			lk.unlock();
 
@@ -156,40 +101,58 @@ public:
 		}
 	}
 
-	// Wait for a scheduled analysis to reach pos.
-	// If the analysis is not scheduled, callback will be as soon as possible
-	// with running == false and others empty.
-	// If the analysis is running, it will be waited on and callback will
-	// contain the analysis information.
-	inline void wait_for_analysis(const std::string &id, std::size_t pos,
-		std::function<void(bool running, std::size_t length,
-			std::unique_ptr<std::list<std::unique_ptr<libaction::Human>>>
-				humans)> callback)
+	// Get the currently running analysis
+	inline void current_analysis(std::function<void(
+		const std::string &id, std::size_t length,
+		std::unique_ptr<std::list<std::unique_ptr<libaction::Human>>> humans)>
+			callback)
 	{
 		try {
 			std::unique_lock<std::mutex> lk(record_mtx);
 
-			// Hold the lock while looking for the task
-			auto tasks = write_tasks();
-			if (std::find(tasks.begin(), tasks.end(), id) == tasks.end()) {
-				lk.unlock();
+			auto id = analyze_record.id;
+			auto length = analyze_record.length;
 
-				analyze_helper.add_read_task([callback] {
-					callback(false, 0, nullptr);
-				});
-				return;
+			std::shared_ptr<std::list<std::unique_ptr<libaction::Human>>>
+				humans_copy;
+			if (analyze_record.humans) {
+				humans_copy = std::shared_ptr<std::list<std::unique_ptr<
+					libaction::Human>>>(
+						new std::list<std::unique_ptr<libaction::Human>>());
+
+				for (auto &human: *analyze_record.humans) {
+					std::unique_ptr<libaction::Human> copy;
+					if (human) {
+						copy.reset(new libaction::Human(*human));
+					}
+					humans_copy->push_back(std::move(copy));
+				}
 			}
 
-			WaitRecord record;
-			record.id = id;
-			record.pos = pos;
-			record.callback = std::move(callback);
+			lk.unlock();
 
-			wait_records.push_back(std::move(record));
+			analyze_helper.add_read_task([callback, id, length, humans_copy] {
+				try {
+					std::unique_ptr<std::list<std::unique_ptr<libaction::Human>>>
+						humans_unique;
+					if (humans_copy) {
+						humans_unique = std::unique_ptr<std::list<std::unique_ptr<
+							libaction::Human>>>(
+								new std::list<std::unique_ptr<libaction::Human>>(
+									std::move(*humans_copy)));
+					}
+
+					try {
+						callback(id, length, std::move(humans_unique));
+					} catch (...) {}
+				} catch (...) {
+					callback("", 0, nullptr);
+				}
+			});
 		} catch (...) {
 			try {
 				analyze_helper.add_read_task([callback] {
-					callback(false, 0, nullptr);
+					callback("", 0, nullptr);
 				});
 			} catch (...) {}
 		}
@@ -200,22 +163,13 @@ private:
 	{
 		std::string id{};
 		std::size_t length{};
-		std::size_t pos{};
-	};
-	struct WaitRecord
-	{
-		std::string id{};
-		std::size_t pos{};
-		std::function<void(bool running, std::size_t length,
-			std::unique_ptr<std::list<std::unique_ptr<libaction::Human>>>
-				humans)> callback;
+		std::unique_ptr<std::list<std::unique_ptr<libaction::Human>>> humans{};
 	};
 
 	std::function<void()> write_update_callback;
 
 	std::mutex record_mtx{};
 	AnalyzeRecord analyze_record{};
-	std::list<WaitRecord> wait_records{};
 
 	AnalyzeHelper analyze_helper;
 

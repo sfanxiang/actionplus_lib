@@ -102,7 +102,7 @@ public:
 		analyze_manager.get_analysis(id, callback);
 	}
 
-	// Get the metadata of the currently running analysis (or empty id)
+	// Get the metadata of the currently running analysis
 	inline void current_analysis_meta(
 		std::function<void(
 			const std::string &id, std::size_t length, std::size_t pos)>
@@ -111,17 +111,13 @@ public:
 		analyze_manager.current_analysis_meta(callback);
 	}
 
-	// Wait for a scheduled analysis to reach pos.
-	// If the analysis is not scheduled, callback will be as soon as possible
-	// with running == false and others empty.
-	// If the analysis is running, it will be waited on and callback will
-	// contain the analysis information.
-	inline void wait_for_analysis(const std::string &id, std::size_t pos,
-		std::function<void(bool running, std::size_t length,
-			std::unique_ptr<std::list<std::unique_ptr<libaction::Human>>>
-				humans)> callback)
+	// Get the currently running analysis
+	inline void current_analysis(std::function<void(
+		const std::string &id, std::size_t length,
+		std::unique_ptr<std::list<std::unique_ptr<libaction::Human>>> humans)>
+			callback)
 	{
-		analyze_manager.wait_for_analysis(id, pos, callback);
+		analyze_manager.current_analysis(callback);
 	}
 
 	// Score a video against a standard video. If one of the videos is not
